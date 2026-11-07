@@ -92,7 +92,7 @@ class MainActivity : Activity() {
   control("DETENER",1f) { command("camera.stopCapture") }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.3.0 · Comandos LG experimentales"
+   text = "Versión 0.3.1 · Vista previa por solicitudes sucesivas"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
@@ -146,7 +146,7 @@ class MainActivity : Activity() {
    var frames=0
    var attempts=0
    var lastError="Sin datos de video"
-   while(previewOn && attempts<3) {
+   while(previewOn && attempts<120) {
     attempts++
     var conn: HttpURLConnection?=null
     try {
@@ -211,10 +211,10 @@ class MainActivity : Activity() {
      conn?.disconnect()
      previewConnection=null
     }
-    if(previewOn && attempts<3) {
+    if(previewOn && attempts<120) {
      val retry=attempts
-     ui.post { if(previewOn) status.text="Reconectando video ($retry/2) · $frames fotogramas" }
-     try { Thread.sleep(1200) } catch(_:InterruptedException) { break }
+     ui.post { if(previewOn) status.text="Continuando vista previa · solicitud $retry · $frames fotogramas" }
+     try { Thread.sleep(250) } catch(_:InterruptedException) { break }
     }
    }
    val stillActive=previewOn
@@ -222,7 +222,7 @@ class MainActivity : Activity() {
    ui.post {
     previewButton.text="INICIAR VISTA PREVIA"
     if(stillActive) {
-     status.text="Vista previa interrumpida · $frames fotogramas · $lastError"
+     status.text="Vista previa finalizada · $frames fotogramas · $lastError"
      if(frames==0) onUnavailable()
     }
    }
