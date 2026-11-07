@@ -16,6 +16,11 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.view.Gravity
@@ -109,7 +114,7 @@ class MainActivity : Activity() {
   control("DETENER",1f) { recordVideo(false) }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.7.0 · Captura 360° experimental"
+   text = "Versión 0.8.0 · Ajustes de fotografía 360°"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
@@ -177,8 +182,8 @@ class MainActivity : Activity() {
  }
  private fun showFileActions(name:String,raw:String) {
   android.app.AlertDialog.Builder(this).setTitle(name)
-   .setItems(arrayOf("Ver archivo","Descargar al teléfono")) { _,choice ->
-    if(choice==0) viewCameraFile(name,raw) else downloadCameraFile(name,raw)
+   .setItems(arrayOf("Ver archivo","Descargar al teléfono","AJUSTAR FOTO 360°")) { _,choice ->
+    when(choice) { 0 -> viewCameraFile(name,raw); 1 -> downloadCameraFile(name,raw); else -> calibrateCameraPhoto(name,raw) }
    }.setNegativeButton("Cancelar",null).show()
  }
  private fun downloadCameraFile(name:String,raw:String) {
@@ -257,6 +262,112 @@ class MainActivity : Activity() {
     }
    }
   }
+ }
+ private fun calibrateCameraPhoto(name:String,raw:String) {
+  if(!name.endsWith(".jpg",true) && !name.endsWith(".jpeg",true) && !name.endsWith(".png",true)) {
+   status.text="Selecciona una fotografía JPG o PNG"; return
+  }
+  val uri=cameraUri(raw) ?: run { status.text="Ruta no válida"; return }
+  status.text="Cargando foto para ajustes..."
+  worker.execute {
+   try {
+    val manager=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val wifi=manager.allNetworks.firstOrNull {
+     manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)==true
+    } ?: throw IllegalStateException("Conecta el Wi-Fi de la LG R105")
+    val conn=wifi.openConnection(URL(uri.toString())) as HttpURLConnection
+    val bytes=try {
+     conn.connectTimeout=8000; conn.readTimeout=20000
+     if(conn.responseCode!=200) throw IllegalStateException("HTTP ${conn.responseCode}")
+     conn.inputStream.use { input ->
+      val out=ByteArrayOutputStream(); val buffer=ByteArray(32768)
+      while(true) {
+       val n=input.read(buffer); if(n<0) break
+       if(out.size()+n>30_000_000) throw IllegalStateException("Foto demasiado grande")
+       out.write(buffer,0,n)
+      }; out.toByteArray()
+     }
+    } finally { conn.disconnect() }
+    val original=BitmapFactory.decodeByteArray(bytes,0,bytes.size)
+     ?: throw IllegalStateException("No se pudo decodificar la imagen")
+    ui.post { showPhotoAdjustments(name,original) }
+   } catch(e:Exception) { ui.post { status.text="Error al cargar foto: ${e.message}" } }
+  }
+ }
+ private fun showPhotoAdjustments(name:String,original:Bitmap) {
+  val layout=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(20,12,20,8) }
+  val image=ImageView(this).apply { adjustViewBounds=true; scaleType=ImageView.ScaleType.FIT_CENTER }
+  layout.addView(image,LinearLayout.LayoutParams(-1,0,1f))
+  val info=TextView(this).apply { text="Ajustes de luminosidad, contraste y saturación. No sustituyen la calibración óptica de las dos lentes." }
+  layout.addView(info)
+  fun slider(label:String):SeekBar {
+   layout.addView(TextView(this).apply { text=label })
+   return SeekBar(this).apply { max=200; progress=100; layout.addView(this) }
+  }
+  val brightness=slider("Luminosidad")
+  val contrast=slider("Contraste")
+  val saturation=slider("Saturación")
+  var adjusted:Bitmap?=null
+  fun render() {
+   val scale= minOf(1f,1600f/original.width)
+   val w=(original.width*scale).toInt().coerceAtLeast(1)
+   val h=(original.height*scale).toInt().coerceAtLeast(1)
+   val source=Bitmap.createScaledBitmap(original,w,h,true)
+   val target=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888)
+   val c=contrast.progress/100f
+   val b=(brightness.progress-100)*1.25f
+   val matrix=ColorMatrix(floatArrayOf(c,0f,0f,0f,b, 0f,c,0f,0f,b, 0f,0f,c,0f,b, 0f,0f,0f,1f,0f))
+   val sat=ColorMatrix().apply { setSaturation(saturation.progress/100f) }
+   matrix.postConcat(sat)
+   Canvas(target).drawBitmap(source,0f,0f,Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter=ColorMatrixColorFilter(matrix) })
+   adjusted?.recycle(); adjusted=target
+   image.setImageBitmap(target)
+   if(source!==original) source.recycle()
+  }
+  val listener=object:SeekBar.OnSeekBarChangeListener {
+   override fun onProgressChanged(bar:SeekBar?,value:Int,fromUser:Boolean) { if(fromUser) render() }
+   override fun onStartTrackingTouch(bar:SeekBar?) {}
+   override fun onStopTrackingTouch(bar:SeekBar?) {}
+  }
+  brightness.setOnSeekBarChangeListener(listener)
+  contrast.setOnSeekBarChangeListener(listener)
+  saturation.setOnSeekBarChangeListener(listener)
+  render()
+  val dialog=android.app.AlertDialog.Builder(this).setTitle("Ajustar fotografía 360°")
+   .setView(layout)
+   .setNeutralButton("Restablecer",null)
+   .setNegativeButton("Cerrar",null)
+   .setPositiveButton("Guardar JPG",null).create()
+  dialog.setOnShowListener {
+   dialog.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+    brightness.progress=100; contrast.progress=100; saturation.progress=100; render()
+   }
+   dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+    val bitmap=adjusted ?: return@setOnClickListener
+    try {
+     val filename="LG360_ajustada_${System.currentTimeMillis()}.jpg"
+     val values=ContentValues().apply {
+      put(MediaStore.Images.Media.DISPLAY_NAME,filename)
+      put(MediaStore.Images.Media.MIME_TYPE,"image/jpeg")
+      if(Build.VERSION.SDK_INT>=29) {
+       put(MediaStore.Images.Media.RELATIVE_PATH,Environment.DIRECTORY_PICTURES+"/LG360CAM")
+       put(MediaStore.Images.Media.IS_PENDING,1)
+      }
+     }
+     val dest=contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values)
+      ?: throw IllegalStateException("No se pudo crear archivo")
+     try {
+      contentResolver.openOutputStream(dest)?.use { out ->
+       if(!bitmap.compress(Bitmap.CompressFormat.JPEG,94,out)) throw IllegalStateException("Error JPEG")
+      } ?: throw IllegalStateException("No se pudo escribir archivo")
+      if(Build.VERSION.SDK_INT>=29) contentResolver.update(dest,ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING,0) },null,null)
+      status.text="Foto guardada en Imágenes/LG360CAM: $filename"
+      dialog.dismiss()
+     } catch(e:Exception) { contentResolver.delete(dest,null,null); throw e }
+    } catch(e:Exception) { status.text="No se pudo guardar: ${e.message}" }
+   }
+  }
+  dialog.show()
  }
  private fun viewCameraFile(name:String,raw:String) {
   val uri=cameraUri(raw)
