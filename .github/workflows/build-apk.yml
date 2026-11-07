@@ -23,7 +23,9 @@ jobs:
           test -d "$ANDROID_HOME"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
-      - name: Run unit tests\n        run: gradle :app:testDebugUnitTest --stacktrace\n      - name: Build APK
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+      - name: Build APK
         run: gradle :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
