@@ -115,9 +115,7 @@ class MainActivity : Activity() {
    try {
     val params=JSONObject().put("fileType","all").put("entryCount",100).put("startPosition",0)
     val result=postJson("/osc/commands/execute",JSONObject().put("name","camera.listFiles").put("parameters",params).toString())
-    val json=JSONObject(result.second)
-    val results=json.optJSONObject("results")
-    val entries=results?.optJSONArray("entries")
+    val entries=JSONObject(result.second).optJSONObject("results")?.optJSONArray("entries")
     ui.post {
      if(result.first!=200 || entries==null) {
       status.text="Galería SD · HTTP ${result.first} · ${result.second.take(450)}"
@@ -126,27 +124,65 @@ class MainActivity : Activity() {
       val urls=ArrayList<String>()
       for(i in 0 until entries.length()) {
        val item=entries.optJSONObject(i) ?: continue
-       val url=item.optString("fileUrl")
-       val name=item.optString("name","Archivo ${i+1}")
-       labels.add(name)
-       urls.add(url)
+       labels.add(item.optString("name","Archivo ${i+1}"))
+       urls.add(item.optString("fileUrl"))
       }
-      if(labels.isEmpty()) { status.text="La cámara no devolvió archivos en esta consulta"; return@post }
+      if(labels.isEmpty()) { status.text="La cámara no devolvió archivos"; return@post }
       android.app.AlertDialog.Builder(this)
        .setTitle("Galería SD · ${labels.size} archivos")
-       .setItems(labels.toTypedArray()) { _,index ->
-        val url=urls[index]
-        if(url.startsWith("http://192.168.43.1:") || url.startsWith("http://192.168.43.1/")) {
-         try { startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url))) }
-         catch(e:Exception) { status.text="No se pudo abrir: ${e.message}" }
-        } else status.text="URL no disponible o no verificada: $url"
-       }
-       .setPositiveButton("Cerrar",null)
-       .show()
+       .setItems(labels.toTypedArray()) { _,index -> viewCameraFile(labels[index],urls[index]) }
+       .setPositiveButton("Cerrar",null).show()
       status.text="Galería SD · ${labels.size} archivos encontrados"
      }
     }
    } catch(e:Exception) { ui.post { status.text="Error al consultar galería: ${e.message}" } }
+  }
+ }
+ private fun viewCameraFile(name:String,raw:String) {
+  val uri=try {
+   val candidate=if(raw.startsWith("/")) "http://192.168.43.1:6624$raw" else raw
+   Uri.parse(candidate)
+  } catch(_:Exception) { null }
+  if(uri==null || uri.scheme!="http" || uri.host!="192.168.43.1" || (uri.port!=-1 && uri.port!=6624)) {
+   status.text="Ruta de archivo no admitida: $raw"
+   return
+  }
+  val address=uri.toString()
+  if(name.lowercase().endsWith(".mp4") || name.lowercase().endsWith(".mov")) {
+   status.text="Abriendo video desde la cámara..."
+   try { startActivity(Intent(Intent.ACTION_VIEW,uri).setDataAndType(uri,"video/*")) }
+   catch(e:Exception) { status.text="No se pudo abrir el video: ${e.message}" }
+   return
+  }
+  status.text="Cargando fotografía..."
+  worker.execute {
+   var conn:HttpURLConnection?=null
+   try {
+    conn=(URL(address).openConnection() as HttpURLConnection).apply { connectTimeout=5000; readTimeout=12000 }
+    val code=conn.responseCode
+    if(code!=200) { ui.post { status.text="La cámara no permite abrir esta ruta · HTTP $code" }; return@execute }
+    val bytes=conn.inputStream.use { input ->
+     val out=ByteArrayOutputStream()
+     val buffer=ByteArray(8192)
+     while(true) {
+      val n=input.read(buffer)
+      if(n<0) break
+      if(out.size()+n>15_000_000) throw IllegalStateException("Archivo demasiado grande para vista previa")
+      out.write(buffer,0,n)
+     }
+     out.toByteArray()
+    }
+    val bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.size)
+    ui.post {
+     if(bitmap==null) status.text="Archivo recibido, pero no es una imagen compatible"
+     else {
+      val image=ImageView(this).apply { setImageBitmap(bitmap); adjustViewBounds=true; scaleType=ImageView.ScaleType.FIT_CENTER }
+      android.app.AlertDialog.Builder(this).setTitle(name).setView(image).setPositiveButton("Cerrar",null).show()
+      status.text="Fotografía abierta · ${bytes.size} bytes"
+     }
+    }
+   } catch(e:Exception) { ui.post { status.text="No se pudo descargar la foto: ${e.message}" } }
+   finally { conn?.disconnect() }
   }
  }
  private fun recordVideo(start:Boolean) {
