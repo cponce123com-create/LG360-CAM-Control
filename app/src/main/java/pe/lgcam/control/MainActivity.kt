@@ -2,6 +2,8 @@ package pe.lgcam.control
 
 import android.app.Activity
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.graphics.BitmapFactory
@@ -87,6 +89,7 @@ class MainActivity : Activity() {
   addButton("DETECTAR Y CONSULTAR BATERÍA") { request("GET","/osc/info",null,false); request("POST","/osc/state","{}",true) }
   recordingInfo=TextView(this).apply { text="Grabación: sin iniciar · Comprueba la microSD"; setTextColor(Color.WHITE); textSize=15f; setPadding(0,10,0,10) }
   root.addView(recordingInfo)
+  root.addView(Button(this).apply { text="GALERÍA SD · VER FOTOS Y VIDEOS"; setOnClickListener { openGallery() } })
   val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
   fun control(label:String, weight:Float, onClick:()->Unit) {
    controls.addView(Button(this).apply { text=label; setOnClickListener { onClick() } }, LinearLayout.LayoutParams(0,-2,weight))
@@ -105,6 +108,46 @@ class MainActivity : Activity() {
   root.addView(status)
   setContentView(root)
   request("GET","/osc/info",null,false)
+ }
+ private fun openGallery() {
+  status.text="Consultando archivos de la microSD..."
+  worker.execute {
+   try {
+    val params=JSONObject().put("fileType","all").put("entryCount",100).put("startPosition",0)
+    val result=postJson("/osc/commands/execute",JSONObject().put("name","camera.listFiles").put("parameters",params).toString())
+    val json=JSONObject(result.second)
+    val results=json.optJSONObject("results")
+    val entries=results?.optJSONArray("entries")
+    ui.post {
+     if(result.first!=200 || entries==null) {
+      status.text="Galería SD · HTTP ${result.first} · ${result.second.take(450)}"
+     } else {
+      val labels=ArrayList<String>()
+      val urls=ArrayList<String>()
+      for(i in 0 until entries.length()) {
+       val item=entries.optJSONObject(i) ?: continue
+       val url=item.optString("fileUrl")
+       val name=item.optString("name","Archivo ${i+1}")
+       labels.add(name)
+       urls.add(url)
+      }
+      if(labels.isEmpty()) { status.text="La cámara no devolvió archivos en esta consulta"; return@post }
+      android.app.AlertDialog.Builder(this)
+       .setTitle("Galería SD · ${labels.size} archivos")
+       .setItems(labels.toTypedArray()) { _,index ->
+        val url=urls[index]
+        if(url.startsWith("http://192.168.43.1:") || url.startsWith("http://192.168.43.1/")) {
+         try { startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url))) }
+         catch(e:Exception) { status.text="No se pudo abrir: ${e.message}" }
+        } else status.text="URL no disponible o no verificada: $url"
+       }
+       .setPositiveButton("Cerrar",null)
+       .show()
+      status.text="Galería SD · ${labels.size} archivos encontrados"
+     }
+    }
+   } catch(e:Exception) { ui.post { status.text="Error al consultar galería: ${e.message}" } }
+  }
  }
  private fun recordVideo(start:Boolean) {
   if(start && recordingRequested) { status.text="Ya se solicitó una grabación"; return }
