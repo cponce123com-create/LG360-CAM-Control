@@ -1,6 +1,9 @@
 package pe.lgcam.control
 
 import android.app.Activity
+import android.app.DownloadManager
+import android.content.Context
+import android.os.Environment
 import android.os.Bundle
 import android.content.Intent
 import android.net.Uri
@@ -81,6 +84,7 @@ class MainActivity : Activity() {
    }
   }
   root.addView(previewButton)
+  root.addView(Button(this).apply { text="CALIBRAR VISTA (ALINEACIÓN VISUAL)"; setOnClickListener { showCalibration() } })
   root.addView(Button(this).apply { text="ACTIVAR PREVIA LG (EXPERIMENTAL)"; setOnClickListener { command("camera._startPreview") } })
   root.addView(Button(this).apply { text="DESACTIVAR PREVIA LG"; setOnClickListener { stopPreview(); command("camera._stopPreview") } })
   fun addButton(label:String, onClick:()->Unit) {
@@ -99,7 +103,7 @@ class MainActivity : Activity() {
   control("DETENER",1f) { recordVideo(false) }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.4.0 · Grabación nativa experimental"
+   text = "Versión 0.6.0 · Descargas y ajuste visual"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
@@ -130,7 +134,7 @@ class MainActivity : Activity() {
       if(labels.isEmpty()) { status.text="La cámara no devolvió archivos"; return@post }
       android.app.AlertDialog.Builder(this)
        .setTitle("Galería SD · ${labels.size} archivos")
-       .setItems(labels.toTypedArray()) { _,index -> viewCameraFile(labels[index],urls[index]) }
+       .setItems(labels.toTypedArray()) { _,index -> showFileActions(labels[index],urls[index]) }
        .setPositiveButton("Cerrar",null).show()
       status.text="Galería SD · ${labels.size} archivos encontrados"
      }
@@ -138,15 +142,58 @@ class MainActivity : Activity() {
    } catch(e:Exception) { ui.post { status.text="Error al consultar galería: ${e.message}" } }
   }
  }
- private fun viewCameraFile(name:String,raw:String) {
-  val uri=try {
-   val candidate=if(raw.startsWith("/")) "http://192.168.43.1:6624$raw" else raw
-   Uri.parse(candidate)
-  } catch(_:Exception) { null }
-  if(uri==null || uri.scheme!="http" || uri.host!="192.168.43.1" || (uri.port!=-1 && uri.port!=6624)) {
-   status.text="Ruta de archivo no admitida: $raw"
-   return
+ private fun showCalibration() {
+  val container=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(30,18,30,8) }
+  val explanation=TextView(this).apply {
+   text="Ajuste visual de rotación de la vista previa. No modifica las lentes ni calibra el cosido 360°."
   }
+  container.addView(explanation)
+  val angle=TextView(this).apply { text="Rotación: ${preview.rotation.toInt()}°" }
+  container.addView(angle)
+  val seek=SeekBar(this).apply { max=360; progress=((preview.rotation.toInt()%360)+360)%360 }
+  seek.setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener {
+   override fun onProgressChanged(bar:SeekBar?,value:Int,fromUser:Boolean) {
+    if(fromUser) { preview.rotation=value.toFloat(); angle.text="Rotación: $value°" }
+   }
+   override fun onStartTrackingTouch(bar:SeekBar?) {}
+   override fun onStopTrackingTouch(bar:SeekBar?) {}
+  })
+  container.addView(seek)
+  android.app.AlertDialog.Builder(this).setTitle("Calibración visual experimental")
+   .setView(container).setNeutralButton("Restablecer") { _,_ -> preview.rotation=0f }
+   .setPositiveButton("Listo",null).show()
+ }
+ private fun cameraUri(raw:String):Uri? {
+  val candidate=if(raw.startsWith("/")) "$base$raw" else raw
+  val uri=try { Uri.parse(candidate) } catch(_:Exception) { return null }
+  if(uri.scheme!="http" || uri.host!="192.168.43.1" || (uri.port!=-1 && uri.port!=6624)) return null
+  return uri.buildUpon().encodedPath(Uri.encode(uri.path ?: "/", "/")).build()
+ }
+ private fun showFileActions(name:String,raw:String) {
+  android.app.AlertDialog.Builder(this).setTitle(name)
+   .setItems(arrayOf("Ver archivo","Descargar al teléfono")) { _,choice ->
+    if(choice==0) viewCameraFile(name,raw) else downloadCameraFile(name,raw)
+   }.setNegativeButton("Cancelar",null).show()
+ }
+ private fun downloadCameraFile(name:String,raw:String) {
+  val uri=cameraUri(raw)
+  if(uri==null) { status.text="Dirección de descarga no válida"; return }
+  val safeName=name.substringAfterLast('/').substringAfterLast('\\\\')
+   .replace(Regex("[^a-zA-Z0-9._ -]"),"_").take(120).ifBlank { "LG360_media" }
+  try {
+   val request=DownloadManager.Request(uri)
+    .setTitle(safeName)
+    .setDescription("Descargando desde LG 360 CAM por Wi-Fi")
+    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,"LG360CAM/$safeName")
+   val manager=getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+   val id=manager.enqueue(request)
+   status.text="Descarga iniciada (#$id). Consulta Descargas para verificar que finalice."
+  } catch(e:Exception) { status.text="No se pudo iniciar la descarga: ${e.message}" }
+ }
+ private fun viewCameraFile(name:String,raw:String) {
+  val uri=cameraUri(raw)
+  if(uri==null) { status.text="Ruta de archivo no admitida: $raw"; return }
   val address=uri.toString()
   if(name.lowercase().endsWith(".mp4") || name.lowercase().endsWith(".mov")) {
    status.text="Abriendo video desde la cámara..."
