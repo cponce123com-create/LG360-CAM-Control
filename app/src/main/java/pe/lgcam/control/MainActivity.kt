@@ -139,62 +139,89 @@ class MainActivity : Activity() {
   if(previewOn) return
   previewOn=true
   previewButton.text="DETENER VISTA PREVIA"
-  status.text="Solicitando video en vivo..."
+  status.text="Conectando vista previa..."
   previewWorker.execute {
-   var received=false
-   var failure="La cámara no ofrece vista previa con este comando."
-   try {
-    val conn=(URL("$base/osc/commands/execute").openConnection() as HttpURLConnection).apply {
-     requestMethod="POST"; doOutput=true; connectTimeout=5000; readTimeout=12000
-     setRequestProperty("Content-Type","application/json")
-    }
-    previewConnection=conn
-    conn.outputStream.use { it.write("""{"name":"camera.getLivePreview"}""".toByteArray(Charsets.UTF_8)) }
-    val code=conn.responseCode
-    val type=conn.contentType ?: ""
-    if(code!=200 || (!type.contains("image") && !type.contains("multipart") && !type.contains("octet-stream"))) {
-     val body=conn.errorStream?.bufferedReader()?.use { it.readText() } ?: conn.inputStream?.bufferedReader()?.use { it.readText() } ?: ""
-     failure="Vista previa no disponible (HTTP $code): ${body.take(250)}"
-    } else {
-     val input=conn.inputStream
-     val frame=ByteArrayOutputStream()
-     var previous=-1
-     var inJpeg=false
-     while(previewOn) {
-      val b=input.read()
-      if(b<0) break
-      if(!inJpeg) {
-       if(previous==0xff && b==0xd8) {
-        frame.reset(); frame.write(0xff); frame.write(0xd8); inJpeg=true
-       }
-      } else {
-       frame.write(b)
-       if(frame.size()>3_000_000) { frame.reset(); inJpeg=false }
-       else if(previous==0xff && b==0xd9) {
-        val bytes=frame.toByteArray()
-        val bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.size)
-        if(bitmap!=null) {
-         received=true
-         ui.post { if(previewOn) { preview.setImageBitmap(bitmap); status.text="Vista previa activa" } }
+   var frames=0
+   var attempts=0
+   var lastError="Sin datos de video"
+   while(previewOn && attempts<3) {
+    attempts++
+    var conn: HttpURLConnection?=null
+    try {
+     conn=(URL("$base/osc/commands/execute").openConnection() as HttpURLConnection).apply {
+      requestMethod="POST"
+      doOutput=true
+      connectTimeout=5000
+      readTimeout=8000
+      setRequestProperty("Content-Type","application/json")
+      setRequestProperty("Connection","keep-alive")
+     }
+     previewConnection=conn
+     conn.outputStream.use { it.write("""{"name":"camera.getLivePreview"}""".toByteArray(Charsets.UTF_8)) }
+     val code=conn.responseCode
+     val type=(conn.contentType ?: "").lowercase()
+     if(code!=200 || (!type.contains("image") && !type.contains("multipart") && !type.contains("octet-stream"))) {
+      val errorStream=if(code in 200..299) conn.inputStream else conn.errorStream
+      val body=errorStream?.bufferedReader()?.use { it.readText().take(250) } ?: ""
+      lastError="HTTP $code · $body"
+      break
+     }
+     conn.inputStream.buffered(16384).use { input ->
+      val frame=ByteArrayOutputStream(65536)
+      val chunk=ByteArray(8192)
+      var previous=-1
+      var inJpeg=false
+      while(previewOn) {
+       val count=input.read(chunk)
+       if(count<0) { lastError="La cámara cerró el flujo de video"; break }
+       for(i in 0 until count) {
+        val b=chunk[i].toInt() and 0xff
+        if(!inJpeg) {
+         if(previous==0xff && b==0xd8) {
+          frame.reset(); frame.write(0xff); frame.write(0xd8); inJpeg=true
+         }
+        } else {
+         frame.write(b)
+         if(frame.size()>4_000_000) { frame.reset(); inJpeg=false }
+         else if(previous==0xff && b==0xd9) {
+          val bytes=frame.toByteArray()
+          val bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.size)
+          if(bitmap!=null) {
+           frames++
+           val countFrames=frames
+           ui.post {
+            if(previewOn) {
+             preview.setImageBitmap(bitmap)
+             status.text="Video recibido · $countFrames fotogramas"
+            }
+           }
+          }
+          frame.reset(); inJpeg=false
+         }
         }
-        frame.reset(); inJpeg=false
+        previous=b
        }
       }
-      previous=b
      }
+    } catch(e:Exception) {
+     lastError="${e.javaClass.simpleName}: ${e.message}"
+    } finally {
+     conn?.disconnect()
+     previewConnection=null
     }
-    conn.disconnect()
-   } catch(e:Exception) { failure="Vista previa: ${e.javaClass.simpleName}: ${e.message}" }
-   finally {
-    previewConnection=null
-    val wasOn=previewOn
-    previewOn=false
-    ui.post {
-     previewButton.text="INICIAR VISTA PREVIA"
-     if(wasOn) {
-      status.text=if(received) "Vista previa finalizada" else failure
-      if(!received) onUnavailable()
-     }
+    if(previewOn && attempts<3) {
+     val retry=attempts
+     ui.post { if(previewOn) status.text="Reconectando video ($retry/2) · $frames fotogramas" }
+     try { Thread.sleep(1200) } catch(_:InterruptedException) { break }
+    }
+   }
+   val stillActive=previewOn
+   previewOn=false
+   ui.post {
+    previewButton.text="INICIAR VISTA PREVIA"
+    if(stillActive) {
+     status.text="Vista previa interrumpida · $frames fotogramas · $lastError"
+     if(frames==0) onUnavailable()
     }
    }
   }
