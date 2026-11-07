@@ -224,7 +224,7 @@ class MainActivity : Activity() {
     var received=0L
     var lastUpdate=0L
     output.use { out ->
-     conn.inputStream.use { input ->
+     conn!!.inputStream.use { input ->
       val buffer=ByteArray(65536)
       while(true) {
        val n=input.read(buffer)
