@@ -178,7 +178,7 @@ class MainActivity : Activity() {
  private fun downloadCameraFile(name:String,raw:String) {
   val uri=cameraUri(raw)
   if(uri==null) { status.text="Dirección de descarga no válida"; return }
-  val safeName=name.substringAfterLast('/').substringAfterLast('\\\\')
+  val safeName=name.substringAfterLast('/').substringAfterLast('\\')
    .replace(Regex("[^a-zA-Z0-9._ -]"),"_").take(120).ifBlank { "LG360_media" }
   try {
    val request=DownloadManager.Request(uri)
