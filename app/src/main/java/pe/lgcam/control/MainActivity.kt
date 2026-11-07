@@ -178,7 +178,7 @@ class MainActivity : Activity() {
   val candidate=if(raw.startsWith("/")) "$base$raw" else raw
   val uri=try { Uri.parse(candidate) } catch(_:Exception) { return null }
   if(uri.scheme!="http" || uri.host!="192.168.43.1" || (uri.port!=-1 && uri.port!=6624)) return null
-  return uri.buildUpon().encodedPath(Uri.encode(uri.path ?: "/", "/")).build()
+  return uri
  }
  private fun showFileActions(name:String,raw:String) {
   android.app.AlertDialog.Builder(this).setTitle(name)
@@ -383,7 +383,7 @@ class MainActivity : Activity() {
   worker.execute {
    var conn:HttpURLConnection?=null
    try {
-    conn=(URL(address).openConnection() as HttpURLConnection).apply { connectTimeout=5000; readTimeout=12000 }
+    conn=cameraConnection(address).apply { connectTimeout=5000; readTimeout=12000 }
     val code=conn.responseCode
     if(code!=200) { ui.post { status.text="La cámara no permite abrir esta ruta · HTTP $code" }; return@execute }
     val bytes=conn.inputStream.use { input ->
@@ -490,8 +490,16 @@ class MainActivity : Activity() {
    }
   }
  }
+ private fun cameraConnection(url:String):HttpURLConnection {
+  val manager=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+  val wifi=manager.allNetworks.firstOrNull { network ->
+   val caps=manager.getNetworkCapabilities(network)
+   caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)==true
+  } ?: throw IllegalStateException("Conecta el Wi-Fi de la LG R105")
+  return wifi.openConnection(URL(url)) as HttpURLConnection
+ }
  private fun postJson(path:String,body:String):Pair<Int,String> {
-  val conn=(URL(base+path).openConnection() as HttpURLConnection).apply {
+  val conn=cameraConnection(base+path).apply {
    requestMethod="POST"; doOutput=true; connectTimeout=5000; readTimeout=10000
    setRequestProperty("Content-Type","application/json")
   }
@@ -509,7 +517,7 @@ class MainActivity : Activity() {
  private fun request(method:String,path:String,body:String?,state:Boolean) {
   worker.execute {
    val result = try {
-    val conn=(URL(base+path).openConnection() as HttpURLConnection).apply {
+    val conn=cameraConnection(base+path).apply {
      requestMethod=method; connectTimeout=4000; readTimeout=7000
      if(body!=null) {
       doOutput=true
@@ -550,7 +558,7 @@ class MainActivity : Activity() {
     attempts++
     var conn: HttpURLConnection?=null
     try {
-     conn=(URL("$base/osc/commands/execute").openConnection() as HttpURLConnection).apply {
+     conn=cameraConnection("$base/osc/commands/execute").apply {
       requestMethod="POST"
       doOutput=true
       connectTimeout=5000
