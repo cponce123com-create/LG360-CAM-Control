@@ -26,6 +26,8 @@ class MainActivity : Activity() {
  private lateinit var battery: TextView
  private lateinit var preview: ImageView
  private lateinit var previewButton: Button
+ private lateinit var recordingInfo: TextView
+ private var recordingRequested = false
 
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
@@ -83,16 +85,18 @@ class MainActivity : Activity() {
    root.addView(Button(this).apply { text = label; setOnClickListener { onClick() } })
   }
   addButton("DETECTAR Y CONSULTAR BATERÍA") { request("GET","/osc/info",null,false); request("POST","/osc/state","{}",true) }
+  recordingInfo=TextView(this).apply { text="Grabación: sin iniciar · Comprueba la microSD"; textColor=Color.WHITE; textSize=15f; setPadding(0,10,0,10) }
+  root.addView(recordingInfo)
   val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
   fun control(label:String, weight:Float, onClick:()->Unit) {
    controls.addView(Button(this).apply { text=label; setOnClickListener { onClick() } }, LinearLayout.LayoutParams(0,-2,weight))
   }
   control("FOTO",1f) { command("camera.takePicture") }
-  control("GRABAR",1f) { command("camera.startCapture") }
-  control("DETENER",1f) { command("camera.stopCapture") }
+  control("GRABAR",1f) { recordVideo(true) }
+  control("DETENER",1f) { recordVideo(false) }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.3.1 · Vista previa por solicitudes sucesivas"
+   text = "Versión 0.4.0 · Grabación nativa experimental"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
@@ -101,6 +105,55 @@ class MainActivity : Activity() {
   root.addView(status)
   setContentView(root)
   request("GET","/osc/info",null,false)
+ }
+ private fun recordVideo(start:Boolean) {
+  if(start && recordingRequested) { status.text="Ya se solicitó una grabación"; return }
+  if(!start && !recordingRequested) { status.text="No hay grabación confirmada para detener"; return }
+  recordingInfo.text=if(start) "Comprobando tarjeta microSD..." else "Solicitando detener grabación..."
+  worker.execute {
+   try {
+    if(start) {
+     val state=postJson("/osc/state","{}")
+     val details=JSONObject(state.second).optJSONObject("state")
+     val sd=details?.optBoolean("_sdCardState",false) ?: false
+     val batteryLevel=details?.optDouble("batteryLevel",-1.0) ?: -1.0
+     if(state.first!=200 || !sd || (batteryLevel>=0 && batteryLevel<0.1)) {
+      ui.post {
+       recordingInfo.text=if(!sd) "No se detecta microSD. No se puede confirmar almacenamiento." else "Revisa batería o conexión"
+       status.text="Estado: HTTP ${state.first} · SD: $sd · batería: $batteryLevel"
+      }
+      return@execute
+     }
+    }
+    val name=if(start) "camera.startCapture" else "camera.stopCapture"
+    val result=postJson("/osc/commands/execute",JSONObject().put("name",name).toString())
+    val json=JSONObject(result.second)
+    val accepted=result.first==200 && json.optString("state")!="error"
+    recordingRequested=if(start) accepted else if(accepted) false else recordingRequested
+    ui.post {
+     recordingInfo.text=when {
+      start && accepted -> "Grabación solicitada · Comprueba indicador de cámara"
+      !start && accepted -> "Detención aceptada · Comprueba archivo en microSD"
+      else -> "La cámara rechazó la orden de grabación"
+     }
+     status.text="HTTP ${result.first} · ${result.second.take(600)}"
+    }
+   } catch(e:Exception) {
+    ui.post { recordingInfo.text="Error de grabación"; status.text=e.message ?: "Error de conexión" }
+   }
+  }
+ }
+ private fun postJson(path:String,body:String):Pair<Int,String> {
+  val conn=(URL(base+path).openConnection() as HttpURLConnection).apply {
+   requestMethod="POST"; doOutput=true; connectTimeout=5000; readTimeout=10000
+   setRequestProperty("Content-Type","application/json")
+  }
+  return try {
+   conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+   val code=conn.responseCode
+   val response=(if(code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+   Pair(code,response)
+  } finally { conn.disconnect() }
  }
  private fun command(name:String) {
   val body=JSONObject().put("name",name).toString()
