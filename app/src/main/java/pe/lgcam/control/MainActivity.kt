@@ -1,9 +1,15 @@
 package pe.lgcam.control
 
 import android.app.Activity
-import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Context
 import android.os.Environment
+import android.os.Build
+import android.provider.MediaStore
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import java.io.File
+import java.io.FileOutputStream
 import android.os.Bundle
 import android.content.Intent
 import android.net.Uri
@@ -178,18 +184,79 @@ class MainActivity : Activity() {
  private fun downloadCameraFile(name:String,raw:String) {
   val uri=cameraUri(raw)
   if(uri==null) { status.text="Dirección de descarga no válida"; return }
-  val safeName=name.substringAfterLast('/').substringAfterLast('\\')
-   .replace(Regex("[^a-zA-Z0-9._ -]"),"_").take(120).ifBlank { "LG360_media" }
-  try {
-   val request=DownloadManager.Request(uri)
-    .setTitle(safeName)
-    .setDescription("Descargando desde LG 360 CAM por Wi-Fi")
-    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,"LG360CAM/$safeName")
-   val manager=getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-   val id=manager.enqueue(request)
-   status.text="Descarga iniciada (#$id). Consulta Descargas para verificar que finalice."
-  } catch(e:Exception) { status.text="No se pudo iniciar la descarga: ${e.message}" }
+  val safeName=name.substringAfterLast('/').replace(Regex("[^a-zA-Z0-9._ -]"),"_")
+   .take(120).ifBlank { "LG360_media" }
+  status.text="Preparando descarga directa: $safeName"
+  worker.execute {
+   var conn:HttpURLConnection?=null
+   var destination:Uri?=null
+   var legacyFile:File?=null
+   var complete=false
+   try {
+    val manager=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val wifi=manager.allNetworks.firstOrNull { network ->
+     manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)==true
+    } ?: throw IllegalStateException("Conecta primero al Wi-Fi de la LG R105")
+    conn=(wifi.openConnection(URL(uri.toString())) as HttpURLConnection).apply {
+     requestMethod="GET"; connectTimeout=8000; readTimeout=20000
+     instanceFollowRedirects=false
+    }
+    val code=conn.responseCode
+    if(code!=200 && code!=206) throw IllegalStateException("La cámara respondió HTTP $code")
+    val expected=conn.contentLengthLong
+    if(Build.VERSION.SDK_INT>=29) {
+     val values=ContentValues().apply {
+      put(MediaStore.Downloads.DISPLAY_NAME,safeName)
+      put(MediaStore.Downloads.MIME_TYPE,if(safeName.endsWith(".mp4",true)) "video/mp4" else "application/octet-stream")
+      put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS+"/LG360CAM")
+      put(MediaStore.Downloads.IS_PENDING,1)
+     }
+     destination=contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values)
+      ?: throw IllegalStateException("No se pudo crear el archivo de destino")
+    } else {
+     val folder=File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),"LG360CAM")
+     if(!folder.exists() && !folder.mkdirs()) throw IllegalStateException("No se pudo crear carpeta")
+     legacyFile=File(folder,safeName)
+    }
+    val output=if(destination!=null) contentResolver.openOutputStream(destination!!)
+     ?: throw IllegalStateException("No se pudo abrir el destino")
+     else FileOutputStream(legacyFile!!)
+    var received=0L
+    var lastUpdate=0L
+    output.use { out ->
+     conn.inputStream.use { input ->
+      val buffer=ByteArray(65536)
+      while(true) {
+       val n=input.read(buffer)
+       if(n<0) break
+       out.write(buffer,0,n)
+       received+=n
+       if(received-lastUpdate>=512*1024) {
+        lastUpdate=received
+        val done=received
+        ui.post { status.text=if(expected>0) "Descargando $safeName · ${done*100/expected}%"
+         else "Descargando $safeName · ${done/1048576} MB" }
+       }
+      }
+     }
+    }
+    if(received==0L || (expected>0 && received!=expected)) throw IllegalStateException("Transferencia incompleta: $received de $expected bytes")
+    if(destination!=null && Build.VERSION.SDK_INT>=29) {
+     contentResolver.update(destination!!,ContentValues().apply { put(MediaStore.Downloads.IS_PENDING,0) },null,null)
+    }
+    complete=true
+    val total=received
+    ui.post { status.text="Descarga completada: $safeName · ${total/1024} KB · Descargas/LG360CAM" }
+   } catch(e:Exception) {
+    ui.post { status.text="Descarga fallida: ${e.message}" }
+   } finally {
+    conn?.disconnect()
+    if(!complete) {
+     destination?.let { contentResolver.delete(it,null,null) }
+     legacyFile?.delete()
+    }
+   }
+  }
  }
  private fun viewCameraFile(name:String,raw:String) {
   val uri=cameraUri(raw)
