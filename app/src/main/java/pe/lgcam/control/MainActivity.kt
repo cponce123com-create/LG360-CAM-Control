@@ -85,7 +85,7 @@ class MainActivity : Activity() {
    root.addView(Button(this).apply { text = label; setOnClickListener { onClick() } })
   }
   addButton("DETECTAR Y CONSULTAR BATERÍA") { request("GET","/osc/info",null,false); request("POST","/osc/state","{}",true) }
-  recordingInfo=TextView(this).apply { text="Grabación: sin iniciar · Comprueba la microSD"; textColor=Color.WHITE; textSize=15f; setPadding(0,10,0,10) }
+  recordingInfo=TextView(this).apply { text="Grabación: sin iniciar · Comprueba la microSD"; setTextColor(Color.WHITE); textSize=15f; setPadding(0,10,0,10) }
   root.addView(recordingInfo)
   val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
   fun control(label:String, weight:Float, onClick:()->Unit) {
