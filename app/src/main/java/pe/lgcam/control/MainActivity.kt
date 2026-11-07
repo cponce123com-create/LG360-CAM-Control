@@ -104,12 +104,12 @@ class MainActivity : Activity() {
   fun control(label:String, weight:Float, onClick:()->Unit) {
    controls.addView(Button(this).apply { text=label; setOnClickListener { onClick() } }, LinearLayout.LayoutParams(0,-2,weight))
   }
-  control("FOTO",1f) { command("camera.takePicture") }
+  control("FOTO 360°",1f) { take360Photo() }
   control("GRABAR",1f) { recordVideo(true) }
   control("DETENER",1f) { recordVideo(false) }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.6.0 · Descargas y ajuste visual"
+   text = "Versión 0.7.0 · Captura 360° experimental"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
@@ -297,6 +297,49 @@ class MainActivity : Activity() {
     }
    } catch(e:Exception) { ui.post { status.text="No se pudo descargar la foto: ${e.message}" } }
    finally { conn?.disconnect() }
+  }
+ }
+ private fun take360Photo() {
+  status.text="Preparando fotografía 360°..."
+  worker.execute {
+   try {
+    val state=postJson("/osc/state","{}")
+    if(state.first!=200) {
+     ui.post { status.text="No se pudo consultar la cámara · HTTP ${state.first}" }
+     return@execute
+    }
+    val details=JSONObject(state.second).optJSONObject("state")
+    val level=details?.optDouble("batteryLevel",-1.0) ?: -1.0
+    if(level>=0 && level<0.10) {
+     ui.post { status.text="Batería demasiado baja para iniciar una captura" }
+     return@execute
+    }
+    // LG R105 exposes a camera mode option; keep the response visible if unsupported.
+    val options=JSONObject().put("captureMode","image")
+    val mode=postJson("/osc/commands/execute",JSONObject()
+     .put("name","camera.setOptions")
+     .put("parameters",JSONObject().put("options",options)).toString())
+    val modeJson=JSONObject(mode.second)
+    if(mode.first !in 200..299 || modeJson.optString("state")=="error") {
+     ui.post { status.text="No se pudo seleccionar modo foto · HTTP ${mode.first} · ${mode.second.take(350)}" }
+     return@execute
+    }
+    val capture=postJson("/osc/commands/execute",JSONObject().put("name","camera.takePicture").toString())
+    val response=JSONObject(capture.second)
+    val commandState=response.optString("state")
+    ui.post {
+     status.text=when {
+      capture.first !in 200..299 || commandState=="error" ->
+       "Fotografía rechazada · HTTP ${capture.first} · ${capture.second.take(350)}"
+      commandState=="inProgress" ->
+       "Captura en proceso. Espera y consulta Galería SD. ID: ${response.optString("id","sin ID")}"
+      else ->
+       "Comando de fotografía aceptado. Comprueba el archivo en Galería SD."
+     }
+    }
+   } catch(e:Exception) {
+    ui.post { status.text="Error al tomar foto 360°: ${e.message}" }
+   }
   }
  }
  private fun recordVideo(start:Boolean) {
