@@ -77,6 +77,8 @@ class MainActivity : Activity() {
    }
   }
   root.addView(previewButton)
+  root.addView(Button(this).apply { text="ACTIVAR PREVIA LG (EXPERIMENTAL)"; setOnClickListener { command("camera._startPreview") } })
+  root.addView(Button(this).apply { text="DESACTIVAR PREVIA LG"; setOnClickListener { stopPreview(); command("camera._stopPreview") } })
   fun addButton(label:String, onClick:()->Unit) {
    root.addView(Button(this).apply { text = label; setOnClickListener { onClick() } })
   }
@@ -90,7 +92,7 @@ class MainActivity : Activity() {
   control("DETENER",1f) { command("camera.stopCapture") }
   root.addView(controls)
   status = TextView(this).apply {
-   text = "Versión 0.2.0 · Vista previa experimental"
+   text = "Versión 0.3.0 · Comandos LG experimentales"
    setTextColor(Color.LTGRAY)
    textSize = 13f
    setTextIsSelectable(true)
